@@ -28,12 +28,23 @@
                                 <span class="bg-indigo-600 p-2 rounded-full w-fit h-fit" x-text="msg.message"></span>
                             </div>
                         </template>
+
+                        {{-- Typing Indicator --}}
+                        <div x-show="typingUsers.length > 0" class="flex items-center gap-2 text-xs text-gray-400 mt-1 px-1">
+                            <span x-text="typingUsers.map(u => u.name).join(', ')"></span>
+                            <span>is typing</span>
+                            <span class="flex gap-0.5">
+                                <span class="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:0ms]"></span>
+                                <span class="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:150ms]"></span>
+                                <span class="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:300ms]"></span>
+                            </span>
+                        </div>
                     </div>
 
                     {{-- Input and Send Button --}}
                     <div class="absolute bottom-6 w-full px-4">
                         <form @submit.prevent="sendMessage" class="relative">
-                            <input type="text" name="message" id="message-input" x-model="newMessage" class="w-full rounded-full bg-gray-900 focus:outline-none" placeholder="Send a message . . .">
+                            <input type="text" name="message" id="message-input" x-model="newMessage" @input="onTyping" class="w-full rounded-full bg-gray-900 focus:outline-none" placeholder="Send a message . . .">
                             <button type="submit" class="absolute h-full top-0 right-0 px-4 py-2 bg-indigo-500 text-white rounded-full hover:bg-indigo-600 focus:outline-none focus:bg-indigo-600">
                                 Send
                             </button>
