@@ -1,5 +1,7 @@
 <?php
 
+use App\Events\MessageSent;
+use App\Http\Controllers\ChatController;
 use App\Http\Controllers\ProfileController;
 use Illuminate\Support\Facades\Route;
 
@@ -15,10 +17,10 @@ Route::middleware('auth')->group(function () {
             return view('dashboard');
         })->name('dashboard');
 
+        Route::get('/test', function () { MessageSent::dispatch('hello'); return 'message'; });
 
-        Route::get('/chat', function () {
-            return view('chat');
-        })->name('chat');
+        Route::get('/chat', [ChatController::class, 'index'])->name('chat');
+        Route::post('/chat', [ChatController::class, 'store'])->name('chat.store');
     });
 
     Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
