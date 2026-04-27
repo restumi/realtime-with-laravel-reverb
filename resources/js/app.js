@@ -18,12 +18,23 @@ document.addEventListener('alpine:init', () => {
 
             if (window.Echo) {
                 this.channel = window.Echo.join('chat-channel')
-                    .here((users) => {
-
-                    })
+                    .here((users) => {})
                     .listen('.MessageSent', (e) => {
-                        const exists = this.messages.some(m => m.id === e.id);
-                        if (!exists) {
+                        const existsReal = this.messages.some(m => m.id === e.id);
+                        if (existsReal) return;
+
+                        const tempIdx = this.messages.findIndex(
+                            m => String(m.id).startsWith('temp_') && m.user_id === e.user_id
+                        );
+                        if (tempIdx !== -1) {
+                            this.messages.splice(tempIdx, 1, {
+                                id: e.id,
+                                user_id: e.user_id,
+                                user_name: e.user_name ?? 'User',
+                                message: e.message,
+                                created_at: e.created_at
+                            });
+                        } else {
                             this.messages.push({
                                 id: e.id,
                                 user_id: e.user_id,
@@ -85,10 +96,6 @@ document.addEventListener('alpine:init', () => {
                 });
 
                 if (!res.ok) throw new Error('Network error');
-                const data = await res.json();
-
-                const idx = this.messages.findIndex(m => m.id === tempId);
-                if (idx !== -1) this.messages[idx] = data;
             } catch (err) {
                 console.error('Gagal kirim:', err);
                 this.messages = this.messages.filter(m => m.id !== tempId);
@@ -100,6 +107,228 @@ document.addEventListener('alpine:init', () => {
         scrollToBottom() {
             const el = this.$refs.messageContainer;
             if (el) el.scrollTop = el.scrollHeight;
+        }
+    }));
+
+    Alpine.data('callApp', () => ({
+        roomId: '',
+        isInRoom: false,
+        isCalling: false,
+        isConnected: false,
+        status: 'Masukkan Room ID untuk bergabung',
+        peer: null,
+        channel: null,
+        localStream: null,
+        pendingCandidates: [],
+        peerReady: false,
+
+        async joinRoom() {
+            if (!this.roomId.trim()) return;
+            this.isInRoom = true;
+            this.status = `Bergabung ke room: ${this.roomId}...`;
+
+            this.channel = window.Echo.join(`call.room.${this.roomId}`)
+                .here((users) => {
+                    console.log('[CALL] here - users:', users);
+                    const others = users.filter(u => u.id !== window.__AUTH_ID__);
+                    this.status = others.length
+                        ? `${others.length} user di room. Klik Start Call untuk memulai.`
+                        : 'Kamu sendirian di room. Tunggu user lain join.';
+                })
+                .joining((user) => {
+                    console.log('[CALL] joining:', user);
+                    this.status = `${user.name} bergabung.`;
+                    if (this.localStream && !this.isConnected) {
+                        console.log('[CALL] joining - ada stream, offer dalam 1s...');
+                        setTimeout(() => this.initiateOffer(), 1000);
+                    }
+                })
+                .leaving((user) => {
+                    console.log('[CALL] leaving:', user);
+                    this.status = `${user.name} meninggalkan room.`;
+                    if (this.isConnected || this.isCalling) this.endCall();
+                })
+                .listenForWhisper('signal', (data) => {
+                    console.log('[CALL] whisper in:', data.type, data);
+                    this.handleSignal(data);
+                });
+        },
+
+        async startCall() {
+            this.isCalling = true;
+            this.status = 'Meminta akses kamera & mikrofon...';
+            try {
+                this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+                this.$refs.localVideo.srcObject = this.localStream;
+                console.log('[CALL] startCall - stream ready, peerReady:', this.peerReady);
+
+                if (this.peerReady) {
+                    // Lawan sudah whisper ready duluan — kita yang offer
+                    console.log('[CALL] peerReady flag aktif, langsung initiateOffer');
+                    await this.initiateOffer();
+                } else {
+                    // Lawan belum ready — whisper ready, tunggu mereka balas dengan offer atau ready
+                    this.status = 'Stream aktif. Menunggu user lain...';
+                    this.channel.whisper('signal', { type: 'ready', from: window.__AUTH_ID__ });
+                }
+            } catch (err) {
+                this.status = 'Gagal akses media: ' + err.message;
+                this.isCalling = false;
+            }
+        },
+
+        async initiateOffer() {
+            console.log('[CALL] initiateOffer - creating offer...');
+            this.initPeer();
+            const offer = await this.peer.createOffer();
+            await this.peer.setLocalDescription(offer);
+            console.log('[CALL] initiateOffer - offer created, whisper offer');
+            this.sendSignal({ type: 'offer', sdp: offer });
+            this.status = 'Menawarkan panggilan...';
+        },
+
+        initPeer() {
+            if (this.peer) this.peer.close();
+            this.pendingCandidates = [];
+
+            this.peer = new RTCPeerConnection({
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                ]
+            });
+
+            this.localStream.getTracks().forEach(track => this.peer.addTrack(track, this.localStream));
+
+            this.peer.ontrack = (e) => {
+                console.log('[CALL] ontrack - remote stream received');
+                this.$refs.remoteVideo.srcObject = e.streams[0];
+            };
+
+            this.peer.onicecandidate = (e) => {
+                if (e.candidate) {
+                    console.log('[CALL] onicecandidate - sending ICE');
+                    this.sendSignal({ type: 'ice', candidate: e.candidate });
+                }
+            };
+
+            this.peer.onconnectionstatechange = () => {
+                const state = this.peer?.connectionState;
+                console.log('[CALL] connectionState:', state);
+                if (state === 'connected') {
+                    this.isConnected = true;
+                    this.isCalling = false;
+                    this.status = '🟢 Terhubung! Panggilan aktif.';
+                } else if (state === 'disconnected') {
+                    this.status = '⏳ Terputus. Mencoba menyambung kembali...';
+                } else if (state === 'failed' || state === 'closed') {
+                    this.status = '🔴 Koneksi gagal atau ditutup.';
+                    this.endCall();
+                }
+            };
+
+            this.peer.onsignalingstatechange = () => {
+                console.log('[CALL] signalingState:', this.peer?.signalingState);
+            };
+
+            this.peer.onicegatheringstatechange = () => {
+                console.log('[CALL] iceGatheringState:', this.peer?.iceGatheringState);
+            };
+
+            this.peer.oniceconnectionstatechange = () => {
+                console.log('[CALL] iceConnectionState:', this.peer?.iceConnectionState);
+            };
+        },
+
+        async handleSignal(data) {
+            // Abaikan signal dari diri sendiri, tapi hanya kalau from jelas terdefinisi
+            if (data.from !== undefined && data.from === window.__AUTH_ID__) {
+                console.log('[CALL] handleSignal: ignored own signal', data.type);
+                return;
+            }
+
+            console.log('[CALL] handleSignal:', data.type, '| from:', data.from, '| myId:', window.__AUTH_ID__);
+
+            switch (data.type) {
+                case 'ready':
+                    console.log('[CALL] ready received - localStream:', !!this.localStream, 'isConnected:', this.isConnected, 'isCalling:', this.isCalling);
+                    if (this.localStream && !this.isConnected && !this.isCalling) {
+                        // Kita sudah punya stream dan belum dalam proses call — kita yang offer
+                        console.log('[CALL] kita punya stream, jadi caller, initiateOffer...');
+                        this.isCalling = true;
+                        await this.initiateOffer();
+                    } else if (!this.localStream) {
+                        // Kita belum punya stream, simpan flag bahwa lawan sudah ready
+                        console.log('[CALL] belum punya stream, set peerReady flag');
+                        this.peerReady = true;
+                        this.peerReadyFrom = data.from;
+                    }
+                    break;
+
+                case 'offer':
+                    this.status = '📞 Panggilan masuk...';
+                    if (!this.localStream) {
+                        try {
+                            this.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+                            this.$refs.localVideo.srcObject = this.localStream;
+                        } catch (err) {
+                            this.status = 'Gagal akses media: ' + err.message;
+                            return;
+                        }
+                    }
+                    this.initPeer();
+                    await this.peer.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                    for (const c of this.pendingCandidates) {
+                        await this.peer.addIceCandidate(new RTCIceCandidate(c));
+                    }
+                    this.pendingCandidates = [];
+                    const answer = await this.peer.createAnswer();
+                    await this.peer.setLocalDescription(answer);
+                    console.log('[CALL] offer handled - whisper answer');
+                    this.sendSignal({ type: 'answer', sdp: answer });
+                    this.status = 'Menjawab panggilan...';
+                    break;
+
+                case 'answer':
+                    console.log('[CALL] answer received - signalingState:', this.peer?.signalingState);
+                    await this.peer.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                    for (const c of this.pendingCandidates) {
+                        await this.peer.addIceCandidate(new RTCIceCandidate(c));
+                    }
+                    this.pendingCandidates = [];
+                    this.status = 'Menunggu koneksi media...';
+                    break;
+
+                case 'ice':
+                    if (!this.peer || !this.peer.remoteDescription) {
+                        console.log('[CALL] ICE queued - no remoteDescription yet');
+                        this.pendingCandidates.push(data.candidate);
+                    } else {
+                        await this.peer.addIceCandidate(new RTCIceCandidate(data.candidate));
+                    }
+                    break;
+            }
+        },
+
+        sendSignal(payload) {
+            if (!this.channel) return;
+            console.log('[CALL] whisper out:', payload.type);
+            this.channel.whisper('signal', { ...payload, from: window.__AUTH_ID__ });
+        },
+
+        endCall() {
+            if (this.peer) { this.peer.close(); this.peer = null; }
+            if (this.localStream) {
+                this.localStream.getTracks().forEach(t => t.stop());
+                this.localStream = null;
+            }
+            this.$refs.localVideo.srcObject = null;
+            this.$refs.remoteVideo.srcObject = null;
+            this.isConnected = false;
+            this.isCalling = false;
+            this.peerReady = false;
+            this.pendingCandidates = [];
+            this.status = 'Panggilan berakhir.';
         }
     }));
 });
