@@ -121,6 +121,40 @@ document.addEventListener('alpine:init', () => {
         localStream: null,
         pendingCandidates: [],
         peerReady: false,
+        micMuted: false,
+        cameraOff: false,
+        remoteUsers: [],
+
+        toggleMic() {
+            if (!this.localStream) return;
+
+            const audioTrack = this.localStream.getAudioTracks()[0];
+            if (audioTrack) {
+                audioTrack.enabled = !audioTrack.enabled;
+                this.micMuted = !audioTrack.enabled;
+                this.sendMediaState();
+            }
+        },
+
+        toggleCamera() {
+            if (!this.localStream) return;
+
+            const videoTrack = this.localStream.getVideoTracks()[0];
+            if (videoTrack) {
+                videoTrack.enabled = !videoTrack.enabled;
+                this.cameraOff = !videoTrack.enabled;
+                this.sendMediaState();
+            }
+        },
+
+        sendMediaState() {
+            if (!this.channel) return;
+            this.channel.whisper('media-state', {
+                from: window.__AUTH_ID__,
+                micMuted: this.micMuted,
+                cameraOff: this.cameraOff
+            });
+        },
 
         async joinRoom() {
             if (!this.roomId.trim()) return;
@@ -130,27 +164,50 @@ document.addEventListener('alpine:init', () => {
             this.channel = window.Echo.join(`call.room.${this.roomId}`)
                 .here((users) => {
                     console.log('[CALL] here - users:', users);
-                    const others = users.filter(u => u.id !== window.__AUTH_ID__);
-                    this.status = others.length
-                        ? `${others.length} user di room. Klik Start Call untuk memulai.`
+                    this.remoteUsers = users
+                        .filter(u => u.id !== window.__AUTH_ID__)
+                        .map(u => ({ id: u.id, name: u.name, micMuted: false, cameraOff: false }));
+
+                    const others = this.remoteUsers.length;
+                    this.status = others
+                        ? `${others} user di room. Klik Start Call untuk memulai.`
                         : 'Kamu sendirian di room. Tunggu user lain join.';
                 })
                 .joining((user) => {
                     console.log('[CALL] joining:', user);
+                    if (!this.remoteUsers.find(u => u.id === user.id)) {
+                        this.remoteUsers.push({ id: user.id, name: user.name, micMuted: false, cameraOff: false });
+                    }
                     this.status = `${user.name} bergabung.`;
                     if (this.localStream && !this.isConnected) {
-                        console.log('[CALL] joining - ada stream, offer dalam 1s...');
                         setTimeout(() => this.initiateOffer(), 1000);
                     }
                 })
                 .leaving((user) => {
                     console.log('[CALL] leaving:', user);
+                    this.remoteUsers = this.remoteUsers.filter(u => u.id !== user.id);
                     this.status = `${user.name} meninggalkan room.`;
                     if (this.isConnected || this.isCalling) this.endCall();
                 })
                 .listenForWhisper('signal', (data) => {
                     console.log('[CALL] whisper in:', data.type, data);
                     this.handleSignal(data);
+                })
+                .listenForWhisper('media-state', (data) => {
+                    if (data.from === window.__AUTH_ID__) return;
+
+                    const idx = this.remoteUsers.findIndex(u => u.id === data.from);
+                    if (idx !== -1) {
+                        this.remoteUsers[idx] = { ...this.remoteUsers[idx], ...data };
+                    } else {
+                        this.remoteUsers.push({
+                            id: data.from,
+                            name: 'User',
+                            micMuted: data.micMuted,
+                            cameraOff: data.cameraOff
+                        });
+                    }
+                    console.log('[CALL] Remote user media state updated:', data);
                 });
         },
 
@@ -328,6 +385,9 @@ document.addEventListener('alpine:init', () => {
             this.isCalling = false;
             this.peerReady = false;
             this.pendingCandidates = [];
+            this.remoteUsers = [];
+            this.micMuted = false;
+            this.cameraOff = false;
             this.status = 'Panggilan berakhir.';
         }
     }));
