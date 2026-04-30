@@ -37,7 +37,7 @@ jobs:
           php artisan key:generate
 
       - name: Run Laravel tests
-        run: php artisan test --no-interaction
+        run: php artisan test
 
   deploy:
     needs: test
