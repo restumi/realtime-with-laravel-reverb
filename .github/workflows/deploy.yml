@@ -29,7 +29,7 @@ jobs:
           restore-keys: composer-
 
       - name: Install Composer dependencies
-        run: composer install --prefer-dist --no-progress --no-interaction --no-dev
+        run: composer install --prefer-dist --no-progress --no-interaction
 
       - name: Setup environment for testing
         run: |
