@@ -31,9 +31,20 @@ jobs:
       - name: Install Composer dependencies
         run: composer install --prefer-dist --no-progress --no-interaction
 
-      - name: Setup environment for testing
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install NPM dependencies & build assets
         run: |
           cp .env.example .env
+          npm ci --ignore-scripts
+          npm run build
+
+      - name: Setup environment for testing
+        run: |
           php artisan key:generate
 
       - name: Run Laravel tests
