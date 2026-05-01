@@ -1,4 +1,4 @@
-name: CI / Deploy to Render
+name: CI
 
 on:
   push:
@@ -44,24 +44,7 @@ jobs:
           npm run build
 
       - name: Setup environment for testing
-        run: |
-          php artisan key:generate
+        run: php artisan key:generate
 
       - name: Run Laravel tests
         run: php artisan test
-
-  deploy:
-    needs: test
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-
-    steps:
-      - name: Trigger Deploy on Render
-        run: |
-          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}")
-          echo "Render response: $RESPONSE"
-          if [ "$RESPONSE" -lt 200 ] || [ "$RESPONSE" -ge 300 ]; then
-            echo "Deploy trigger failed with status $RESPONSE"
-            exit 1
-          fi
-          echo "Deploy triggered successfully"
